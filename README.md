@@ -7,6 +7,7 @@ Minimal OpenTelemetry SDK examples for sending OTLP logs to [Logsblox](https://l
 | Language | Path | Description |
 |----------|------|-------------|
 | Go       | [sdk/go](./integrations/opentelemetry/sdk/go) | OTLP HTTP protobuf logs via the Go OpenTelemetry SDK |
+| Java     | [sdk/java](./integrations/opentelemetry/sdk/java) | OTLP HTTP protobuf logs via the Java OpenTelemetry SDK |
 | Node.js  | [sdk/node](./integrations/opentelemetry/sdk/node) | OTLP HTTP protobuf logs via the Node.js OpenTelemetry SDK |
 
 ## Requirements

@@ -10,4 +10,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Go OTel SDK (Logs) – minimal OTLP HTTP protobuf example ([sdk/go](./integrations/opentelemetry/sdk/go))
+- Java OTel SDK (Logs) – minimal OTLP HTTP protobuf example ([sdk/java](./integrations/opentelemetry/sdk/java))
 - Node.js OTel SDK (Logs) – minimal OTLP HTTP protobuf example ([sdk/node](./integrations/opentelemetry/sdk/node))
