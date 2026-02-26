@@ -21,7 +21,7 @@ exporter = OTLPLogExporter(
     endpoint=os.getenv("LOGSBLOX_ENDPOINT", ""),
     headers={"x-api-key": os.getenv("LOGSBLOX_API_KEY", "")},
     compression=Compression.Gzip,
-    timeout=15,
+    timeout=30,
 )
 provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
 

@@ -1,0 +1,10 @@
+[package]
+name = "logsblox-otel-sdk-rust"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+opentelemetry = "0.31.0"
+opentelemetry_sdk = { version = "0.31.0", default-features = false, features = ["logs"] }
+opentelemetry-otlp = { version = "0.31.0", default-features = false, features = ["logs", "http-proto", "reqwest-blocking-client", "gzip-http"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
