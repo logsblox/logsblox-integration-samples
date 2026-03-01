@@ -15,3 +15,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python OTel SDK (Logs) – minimal OTLP HTTP protobuf example ([sdk/python](./integrations/opentelemetry/sdk/python))
 - Rust OTel SDK (Logs) – minimal OTLP HTTP protobuf example ([sdk/rust](./integrations/opentelemetry/sdk/rust))
 - .NET OTel SDK (Logs) – minimal OTLP HTTP protobuf example ([sdk/dotnet](./integrations/opentelemetry/sdk/dotnet))
+- Kubernetes OTel Collector (Logs) – minimal OTLP HTTP protobuf example ([kubernetes](./integrations/opentelemetry/kubernetes))
