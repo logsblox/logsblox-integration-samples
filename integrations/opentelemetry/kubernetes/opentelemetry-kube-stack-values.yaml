@@ -1,0 +1,235 @@
+# OpenTelemetry Kube Stack values for Logsblox
+# Collects container logs from all pods in the cluster and forwards them to Logsblox via OTLP HTTP.
+# Requires: Create secret otel-collector-secrets with LOGSBLOX_ENDPOINT and LOGSBLOX_API_KEY.
+opentelemetry-operator:
+  admissionWebhooks:
+    certManager:
+      enabled: false
+    autoGenerateCert:
+      enabled: true
+# Optional: Set cluster name for multi-cluster log identification (e.g. production-us-east).
+# EKS/GKE/AKS may auto-detect when left unset.
+# clusterName: "unknown_k8s_cluster"
+collectors:
+  daemon:
+    env:
+    - name: LOGSBLOX_ENDPOINT
+      valueFrom:
+        secretKeyRef:
+          name: otel-collector-secrets
+          key: LOGSBLOX_ENDPOINT
+    - name: LOGSBLOX_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: otel-collector-secrets
+          key: LOGSBLOX_API_KEY
+    presets:
+      kubeletMetrics:
+        enabled: false
+      hostMetrics:
+        enabled: false
+      logsCollection:
+        enabled: true
+      kubernetesEvents:
+        enabled: false
+      clusterMetrics:
+        enabled: false
+    config:
+      receivers:
+        filelog:
+          # Files matching these globs are read; everything else is implicitly excluded.
+          # Path: /var/log/pods/<namespace>_<pod-name>_<uid>/<container-name>/<restart>.log
+          include:
+            - /var/log/pods/*/*/*.log
+          exclude:
+            - /var/log/pods/*opentelemetry-kube-stack*/*/*.log
+          include_file_path: true
+          include_file_name: false
+          start_at: end
+          operators:
+            # Parse pod metadata for k8sattributes association
+            - type: regex_parser
+              id: extract_pod_from_path
+              regex: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<pod_uid>[^/]+)/(?P<container_name>[^/]+)/(?P<restart_count>\d+)\.log$'
+              parse_from: attributes["log.file.path"]
+              on_error: send
+            - type: container
+              id: parse_k8s_container
+            # Parse JSON-formatted application logs
+            - type: json_parser
+              id: parse_json_body
+              if: 'body != nil and IsMatch(body, "^\\s*\\{")'
+              parse_from: body
+              on_error: send
+            # Infer severity from body when level not already set (e.g. "INFO", "ERROR")
+            - type: regex_parser
+              id: extract_level_from_text
+              if: 'attributes.level == nil and body != nil and body matches "(?i)(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)"'
+              parse_from: body
+              regex: '(?i)(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|CRITICAL)'
+              on_error: send
+            - type: regex_parser
+              id: map_severity
+              if: 'attributes.level != nil'
+              parse_from: attributes.level
+              regex: '(?i)(?P<level>DEBUG|INFO|WARN|WARNING|ERROR|FATAL|TRACE|CRITICAL)'
+              on_error: send
+              severity:
+                parse_from: attributes.level
+                mapping:
+                  debug: ["debug", "DEBUG"]
+                  info: ["info", "INFO"]
+                  warn: ["warn", "WARN", "warning", "WARNING"]
+                  error: ["error", "ERROR"]
+                  fatal: ["fatal", "FATAL"]
+                  trace: ["trace", "TRACE"]
+                  critical: ["critical", "CRITICAL"]
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+      processors:
+        # Prevents OOM under log spikes
+        memory_limiter:
+          check_interval: 5s
+          limit_percentage: 80
+          spike_limit_percentage: 25
+        # Batch logs to improve performance and reduce network overhead
+        batch:
+          send_batch_size: 100
+          timeout: 30s
+        # Promote filelog path fields to resource attrs so k8sattributes can associate pods
+        transform/seed_pod_resource:
+          log_statements:
+            - context: log
+              statements:
+                # Promote filelog-extracted identifiers to resource attrs for k8sattributes.
+                - set(resource.attributes["k8s.pod.uid"], attributes["pod_uid"]) where attributes["pod_uid"] != nil
+                - set(resource.attributes["k8s.pod.name"], attributes["pod_name"]) where attributes["pod_name"] != nil
+                - set(resource.attributes["k8s.container.name"], attributes["container_name"]) where attributes["container_name"] != nil
+        # Enrich logs with pod metadata (labels, workload, namespace) from Kubernetes API
+        k8sattributes:
+          filter:
+            node_from_env_var: OTEL_K8S_NODE_NAME
+          pod_association:
+            - sources:
+                - from: resource_attribute
+                  name: k8s.pod.ip
+            - sources:
+                - from: resource_attribute
+                  name: k8s.pod.uid
+            - sources:
+                - from: connection
+          auth_type: serviceAccount
+          passthrough: false
+          extract:
+            metadata:
+              - k8s.pod.name
+              - k8s.pod.uid
+              - k8s.pod.ip
+              - k8s.pod.start_time
+              - k8s.container.name
+              - k8s.namespace.name
+              - k8s.node.name
+              - k8s.deployment.name
+              - k8s.replicaset.name
+              - k8s.daemonset.name
+              - k8s.statefulset.name
+              - k8s.job.name
+              - k8s.cronjob.name
+              - service.name
+              - service.version
+              - service.instance.id
+            # Extracts environment from pod labels for index filtering.
+            labels:
+              - tag_name: environment
+                key: environment
+                from: pod
+              - tag_name: env
+                key: env
+                from: pod
+              - tag_name: deployment_environment
+                key: deployment.environment
+                from: pod
+          pod_association:
+            - sources:
+                - from: connection
+                  name: ip
+            - sources:
+                - from: resource_attribute
+                  name: k8s.pod.ip
+            - sources:
+                - from: resource_attribute
+                  name: k8s.pod.uid
+            - sources:
+                - from: resource_attribute
+                  name: k8s.pod.name
+        # Normalize fields and copy Kubernetes metadata to log attributes (searchable in Logsblox)
+        transform/add_pod_metadata:
+          log_statements:
+            - context: log
+              statements:
+                # Unify message from msg/message/body
+                - set(body, attributes["msg"]) where attributes["msg"] != nil
+                - set(body, attributes["message"]) where attributes["message"] != nil
+                - set(attributes["message"], body) where body != nil
+                # Strip low-value attributes
+                - delete_key(attributes, "log.file.name")
+                - delete_key(attributes, "log.file.path")
+                - delete_key(attributes, "log.iostream")
+                - delete_key(attributes, "logtag")
+                - delete_key(attributes, "flag")
+                - delete_key(attributes, "timestamp")
+                - delete_key(attributes, "time")
+                - delete_key(attributes, "msg")
+                # Pod metadata
+                - set(attributes["pod.name"], resource.attributes["k8s.pod.name"]) where resource.attributes["k8s.pod.name"] != nil
+                - set(attributes["pod.name"], attributes["pod_name"]) where attributes["pod_name"] != nil and attributes["pod.name"] == nil
+                - delete_key(attributes, "pod_name")
+                - set(attributes["pod.uid"], resource.attributes["k8s.pod.uid"]) where resource.attributes["k8s.pod.uid"] != nil
+                - set(attributes["pod.uid"], attributes["pod_uid"]) where attributes["pod_uid"] != nil and attributes["pod.uid"] == nil
+                - delete_key(attributes, "pod_uid")
+                - set(attributes["container.name"], resource.attributes["k8s.container.name"]) where resource.attributes["k8s.container.name"] != nil
+                - set(attributes["container.name"], attributes["container_name"]) where attributes["container_name"] != nil and attributes["container.name"] == nil
+                - delete_key(attributes, "container_name")
+                - set(attributes["namespace"], resource.attributes["k8s.namespace.name"]) where resource.attributes["k8s.namespace.name"] != nil
+                - set(attributes["node.name"], resource.attributes["k8s.node.name"]) where resource.attributes["k8s.node.name"] != nil
+                - set(attributes["k8s.pod.start_time"], resource.attributes["k8s.pod.start_time"]) where resource.attributes["k8s.pod.start_time"] != nil
+                - set(attributes["k8s.container.restart_count"], attributes["restart_count"]) where attributes["restart_count"] != nil
+                - delete_key(attributes, "restart_count")
+                # Workload and service metadata (Deployment, StatefulSet, Job, etc.)
+                - set(attributes["deployment.name"], resource.attributes["k8s.deployment.name"]) where resource.attributes["k8s.deployment.name"] != nil
+                - set(attributes["statefulset.name"], resource.attributes["k8s.statefulset.name"]) where resource.attributes["k8s.statefulset.name"] != nil
+                - set(attributes["daemonset.name"], resource.attributes["k8s.daemonset.name"]) where resource.attributes["k8s.daemonset.name"] != nil
+                - set(attributes["job.name"], resource.attributes["k8s.job.name"]) where resource.attributes["k8s.job.name"] != nil
+                - set(attributes["cronjob.name"], resource.attributes["k8s.cronjob.name"]) where resource.attributes["k8s.cronjob.name"] != nil
+                - set(attributes["service.name"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil
+                - set(attributes["service.version"], resource.attributes["service.version"]) where resource.attributes["service.version"] != nil
+                - set(attributes["service.instance.id"], resource.attributes["service.instance.id"]) where resource.attributes["service.instance.id"] != nil
+        # Skip empty/whitespace-only logs
+        filter/drop_empty_logs:
+          logs:
+            log_record:
+              - 'body == nil'
+              - 'body == ""'
+              - 'IsMatch(body, "^\\s*$")'
+              - 'attributes["message"] != nil and IsMatch(attributes["message"], "^\\s*$")'
+      exporters:
+        otlphttp/logsblox:
+          endpoint: ${LOGSBLOX_ENDPOINT}
+          encoding: proto
+          compression: gzip
+          headers:
+            x-api-key: ${LOGSBLOX_API_KEY}
+      extensions:
+        health_check:
+          endpoint: 0.0.0.0:13133
+      service:
+        extensions: [health_check]
+        pipelines:
+          logs:
+            receivers: [filelog]
+            processors: [transform/seed_pod_resource, k8sattributes, transform/add_pod_metadata, filter/drop_empty_logs, batch]
+            exporters: [otlphttp/logsblox]
