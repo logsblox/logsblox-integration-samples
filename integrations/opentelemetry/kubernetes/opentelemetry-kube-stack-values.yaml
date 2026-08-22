@@ -21,6 +21,8 @@ namespaces:
     # - 'resource.attributes["k8s.namespace.name"] != "NOT_THIS_NAMESPACE"'
 collectors:
   daemon:
+    tolerations:
+      - operator: Exists
     env:
     - name: LOGSBLOX_ENDPOINT
       valueFrom:
@@ -45,7 +47,7 @@ collectors:
         enabled: false
     config:
       receivers:
-        filelog:
+        file_log:
           # Files matching these globs are read; everything else is implicitly excluded.
           # Path: /var/log/pods/<namespace>_<pod-name>_<uid>/<container-name>/<restart>.log
           # Default: all namespaces. Edit namespaces above to narrow scope.
@@ -59,7 +61,7 @@ collectors:
           # instead of being skipped when they finish before tailing starts.
           start_at: beginning
           operators:
-            # Parse pod metadata for k8sattributes association
+            # Parse pod metadata for k8s_attributes association
             - type: regex_parser
               id: extract_pod_from_path
               regex: '^/var/log/pods/(?P<namespace>[^_]+)_(?P<pod_name>[^_]+)_(?P<pod_uid>[^/]+)/(?P<container_name>[^/]+)/(?P<restart_count>\d+)\.log$'
@@ -112,17 +114,23 @@ collectors:
           send_batch_max_size: 8192
           timeout: 200ms
           metadata_keys: []
-        # Promote filelog path fields to resource attrs so k8sattributes can associate pods
+        # Chart defaults still declare resourcedetection/env on metrics/traces.
+        # Keep the same processor under the new name and drop the old key.
+        resource_detection/env:
+          timeout: 2s
+          override: false
+        resourcedetection/env: null
+        # Promote file_log path fields to resource attrs so k8s_attributes can associate pods
         transform/seed_pod_resource:
           log_statements:
             - context: log
               statements:
-                # Promote filelog-extracted identifiers to resource attrs for k8sattributes.
+                # Promote file_log-extracted identifiers to resource attrs for k8s_attributes.
                 - set(resource.attributes["k8s.pod.uid"], attributes["pod_uid"]) where attributes["pod_uid"] != nil
                 - set(resource.attributes["k8s.pod.name"], attributes["pod_name"]) where attributes["pod_name"] != nil
                 - set(resource.attributes["k8s.container.name"], attributes["container_name"]) where attributes["container_name"] != nil
         # Enrich logs with pod metadata (labels, workload, namespace) from Kubernetes API
-        k8sattributes:
+        k8s_attributes:
           filter:
             node_from_env_var: OTEL_K8S_NODE_NAME
           auth_type: serviceAccount
@@ -253,6 +261,10 @@ collectors:
         extensions: [health_check]
         pipelines:
           logs:
-            receivers: [filelog]
-            processors: [memory_limiter, transform/seed_pod_resource, k8sattributes, transform/add_pod_metadata, filter/allowed_namespaces, filter/require_index, filter/drop_empty_logs, batch]
+            receivers: [file_log]
+            processors: [memory_limiter, transform/seed_pod_resource, k8s_attributes, transform/add_pod_metadata, filter/allowed_namespaces, filter/require_index, filter/drop_empty_logs, batch]
             exporters: [otlphttp/logsblox]
+          metrics:
+            processors: [resource_detection/env, resource/hostname, batch]
+          traces:
+            processors: [resource_detection/env, resource/hostname, batch]
